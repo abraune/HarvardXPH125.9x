@@ -1,0 +1,475 @@
+---
+title: "HarvardX PH125.9 Cancer Project"
+author: "Alexander Braune"
+date: "08.03.2022"
+
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    df_print: kable
+fontsize: 12pt
+geometry: margin=1in
+abstract: "This project shows basis steps of exploratory data analysis and the building basic classification machine learning models: Logarithmical Regression, Random Forrest and Support vector machines. As a use case the UCI Cervical Cancer data set is used to construct a forecast method that predicts classification of risk facotor constellations into cancerous and non-cancerous. The final SVM model provides a validated accuracy of .87 and comparably lacks Specificity the least of all three models."
+---
+
+```{r Load libraries, include=FALSE, echo=FALSE}
+##############################################################################+
+# R Setup // install needed components                          
+##############################################################################+
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(corrplot)) install.packages("corrplot", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+if(!require(e1071)) install.packages("e1071", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(ggplot2)
+library(corrplot) 
+library(randomForest)
+library(e1071) 
+
+options(max.print=999999)
+
+```
+
+\pagebreak
+
+# Introduction and Overview
+
+Medical classifications are a well known field where Data Science techniques are applied.
+The increased use of Machine Learning algorithms for predicting diagnostic findings adds value to healthcare in a way that goes beyond descriptive statistics. 
+Predictive data analytics supports medical staff when determining a diagnosis or act as a warning mechanism as the importance of variables is revealed for positive cases and variables with a high importance can be designated as risk factors.  
+
+Especially cancer research is heavily focused in early predictions, therefore the revealing of risk factors and classification into positive and negative cases from variable inputs is a common use case for Healthcare Data Scientists. 
+
+Because of this real world applicability the development of a Machine Learning algorithm that predicts cancer indications will be the aim of this final project for the edX course PH125.9x form HarvardX.   
+  
+The data used is the *"Cervical cancer (Risk Factors) Data Set"* offered by the UCI Machine Learning Repositor (published 03/2017). The dataset was donated from research at the "Hospital Universitario de Caracas" in Venezuela. It  comprises demographic information, habits, and historic medical records of 858 patients.     
+
+The records are organized per patient and contains 30 columns of variables that describe the mediacal profile of the patient. The four target columns contain the result of different cervical cancer indications: Hinselmann, Schiller, Cytology and Biopsy.   
+
+The Model is therefore set up to classify a given record set of variables from a new patient into the classes *"0 cancer indications"* and *"1 or more cancer indications*".   
+
+In chapter 2.1 the data format and logic is inspected, missing values are imputed and dataframes are prepared for model input. 
+
+Following in chapter 2.2, the steps of  exploratory data analysis offer an understanding of the input variables and target variables. The data correlation, distribution of input and target variables are inspected and insights from variable constellations are generated.
+
+Model training is done with partitioned data from chapter 2.3.
+
+The insights generated are then used in chapter 2.4 to build three common Machine Learning models for classification from scratch (*Logarithmical Regression*, *Random Forrest Prediction* and *Support Vector Machines*).   
+The models are trained and compared by evaluating the the overall accuracy.
+All models are then evaluated with the validation data set in chapter 3 from which are conclusions drawn in chapter 4.  
+
+
+# Methods and Analysis
+In these sections the data is prepared, explored, partitioned and the steps of model building and parametrization are described.  
+
+## Data Preperation
+The dataset is downloaded from <https://archive.ics.uci.edu/ml/machine-learning-databases/00383/risk_factors_cervical_cancer.csv>. It is read in with basic R commands as it is not zipped but a plain comma separated value (csv) file and stored as a dataframe.   
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# download file
+dl <- tempfile()
+download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/00383/risk_factors_cervical_cancer.csv", dl)
+data <- read.csv(dl) 
+```
+   
+   
+   To investigate the download the header and column classes of the dataframe are evaluated:
+```{r echo=FALSE, fig.height=16, fig.width=8, message=FALSE, warning=FALSE}
+ # define function returning column classes
+colclasses <- function(df) {
+  t(as.data.frame(lapply(data, function(x) paste(class(x), collapse = ','))))
+}
+
+# return data column classes
+colclasses(data)
+```
+
+It can be noted that most columns are string, although numerics are expected. With head() a preview of the first rows is generated to inspect why read.csv() created columns as a string class.   
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ t(head(data))%>%
+  knitr::kable()
+```
+\pagebreak
+
+In the preview strings of "?" are made visible. As numeric variable columns are therefore set as character fields, the "?" and "" string records are extracted and set as NA value entries.   
+
+```{r echo=TRUE}
+#replace strings with NA
+data <- na_if(data, "?") 
+data <- na_if(data, "")
+```
+
+The variables can then be transformed as numeric fields without warnings:
+
+```{r echo=TRUE}
+```
+
+
+```{r echo=TRUE}
+#convert to numeric columns
+data <- as.data.frame(apply(data, 2, as.numeric))
+```
+
+Missing values can not be used when training regression models. As many variables should be integers (that indicate binary results) imputation with averages is not sufficient. NA values are therefore filled with a more robust method of filling values up with column medians.  
+
+```{r echo=TRUE}
+# replace NA with median values of the columns
+for(i in 1:32) {                                   
+  data[ , i][is.na(data[ , i])] <- median(data[ , i], na.rm = TRUE)
+}
+```
+
+The consistency is therefore given as NA values are imputed with medians:
+
+```{r echo=TRUE}
+#check for na
+anyNA(data)
+```
+
+With colSums() empty columns only containing 0 values are found.
+
+```{r echo=TRUE}
+#check for empty columns
+colSums(data, na.rm = T)
+```
+
+Empty columns have no value for prediction models and are dropped.
+
+```{r echo=TRUE}
+#drop empty columns
+i <- (colSums(data, na.rm=T) !=0)
+data <- data[, i]
+```
+
+For the target values, first the count of positive indications is added:
+
+
+```{r echo=TRUE}
+# create indications counter columns
+data$cancer_indications = data$Schiller+data$Hinselmann+data$Citology+data$Biopsy
+```
+
+With a conservative approach, also having only *one* indication will be labeled as a positive cancer case.
+
+```{r}
+# signal cancer if at least one indication is found (1 for yes, 0 for no) 
+data$cancer[data$cancer_indications <1] <- 0
+data$cancer[data$cancer_indications >0] <- 1
+```
+
+The input variables are extracted from the target variables to feed models for training with dataframes containing only input variables:
+
+```{r}
+# extract variables subset without results
+data_var<-data[c(1:30)]
+
+```
+
+And the actual outcomes are extracted as y_act and stored as a factor column. 
+
+
+```{r}
+# extract actual results subset
+y_act <- as.factor(data$cancer)
+```
+
+
+## Data Analysis
+First, the target columns are evaluated, following the distribution and correlation of risk factor variables. 
+
+
+The created actual outcome column shows that 102 positive cancer cases are among the 858 patiens.
+
+```{r echo=FALSE}
+# display result column sums
+barplot(table(y_act), xlab = "0 = No cancer indication, 1 = at least one cancer indication )", ylab = "cases")
+```
+
+The random baseline guess is therefore that a new patient has a positive cancer indication with a probability of ~ 12%. 
+
+```{r echo=FALSE}
+# sum cases per indicator
+colSums(data[c(31:34)])
+```
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+# sum cases per indicator
+barplot(colSums(data[c(31:34)]))
+```
+
+With 74 cases Schiller is the most sensitive indicator and Hinselmann with 35 the least reactive.
+In combintation this furthers the insight that the overlapping indications are not broad.
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+#show number of identifier distribution
+filter(data,cancer>0) %>%
+  group_by(cancer_indications) %>% 
+  summarize(sum=sum(cancer)) %>%
+  ggplot(aes(cancer_indications,sum)) +
+  geom_bar(stat="identity")+
+  labs(title = "Number of positive identifiers for positive cases")
+```
+
+Only 6 cases have all four identifier. It is therefore accurate to assume a positive indication with at least one identifier is the broader and more conservative definition of [cancer=1].
+
+Following the risk factor variables are plotted with the layers [cancer=1] and [cancer=0].
+
+  ```{r echo=FALSE, fig.height=14, fig.width=12, message=FALSE, warning=FALSE}
+#plot variable distribution by cancer status
+data %>% select(-35) %>% select(-34) %>% select(-33) %>% select(-32) %>% select(-31) %>%
+  gather("feature", "value", -(cancer)) %>%
+  ggplot(aes(value, fill = as.factor(cancer))) +
+  geom_density(alpha = 0.5) +
+  xlab("Variable values") +
+  ylab("Density") +
+  theme(legend.position = "top",
+        axis.text.x = element_blank(), axis.text.y = element_blank(),
+        legend.title=element_blank()) +
+  scale_fill_discrete(labels = c("no cancer", "cancer")) +
+  facet_wrap(~ feature, scales = "free", ncol = 4)
+```
+
+It is visible that the distribution of cancerous and non-cancerous cases is around a similar average, but some risk factors have a higher density over the average. For our models this means that the constellation of variables will important as well. Also, variables with a more distinct profile between [cancer=0] and [cancer=1] should be more valuable for model training.
+
+```{r echo=FALSE, fig.height=14, fig.width=12, message=FALSE, warning=FALSE}
+#plot variable distribution by indication count
+data %>% select(-36) %>% select(-34) %>% select(-33) %>% select(-32) %>% select(-31) %>%
+  gather("feature", "value", -(cancer_indications)) %>%
+  ggplot(aes(value, fill = as.factor(cancer_indications))) +
+  geom_density(alpha = 0.5) +
+  xlab("Variable values") +
+  ylab("Density") +
+  theme(legend.position = "top",
+        axis.text.x = element_blank(), axis.text.y = element_blank(),
+        legend.title=element_blank()) +
+  scale_fill_discrete(labels = c("0 indications", "1", "2", "3", "4")) +
+  facet_wrap(~ feature, scales = "free", ncol = 4)
+```
+
+
+The differentiation by indication count shows that some variables have a high density above a single value. This leads to the conclusion this column has a low variability. These add low value to the prediction models and are eliminated in a near-zero-variability subset, like the "empty" columns with 0 values only.
+
+
+```{r echo=TRUE}
+# exclude near zero variance columns
+data_var_nzv <- data_var[,-nearZeroVar(data_var)]
+```
+
+
+```{r echo=FALSE}
+t(head(data))%>%
+  knitr::kable()
+```
+
+Following the variable correlation (dependencies between input values) is inspected:
+
+```{r echo=FALSE, fig.height=8, fig.width=8, message=FALSE, warning=FALSE}
+# find correlation and between variables
+cor <- cor(data_var, method = "spearman")
+corrplot(cor, order = 'hclust', addrect = 2)
+
+```
+
+Cluster of highly correlated variables around Smoke and STD can be graphically derived. There add also low value to the model training. For example *"Smokes packs per year"* and *"Smokes years"* are highly correlated. Considering both therefore only adds noise. Highly correlated variables with a correlation above .75 are:
+
+```{r echo=FALSE}
+# name variables with high correlation
+high_cor <- findCorrelation(cor, cutoff=0.75)
+(names(data[high_cor]))
+```
+\pagebreak
+
+
+## Data Partitioning
+
+Before applying any data investigation the whole data set is split into a 70% training set and a 30% validation set. The count of records prevents the validation set to be smaller.
+
+A model that is parametrized with the whole data set is prone to overfitting and one can not determine a true forecast accuracy as all data is already known to the model (bias).
+
+With randomly splitting the data into separate sets the training of the model can be done without overfitting it. 
+After all parametrization of the model the true accuracy can be evaluated with a previously unconsidered validation data set. 
+
+```{r message=FALSE, warning=FALSE}
+#partition datasets, 70% for training, 30% for validation
+set.seed(2, sample.kind="Rounding") 
+test_index <- createDataPartition(y = data$Age, times = 1, p = 0.3, list = FALSE)
+
+# split variable dataset
+train_var <- data_var[-test_index,]
+validate_var <- data_var[test_index,]
+
+# split results dataset
+train_y_act <- as.factor(data[-test_index,36])
+validate_y_act <- as.factor(data[test_index,36])
+
+# split near sero variance dataset
+train_var_nzv <- data_var_nzv[-test_index,]
+validate_var_nzv <- data_var_nzv[test_index,]
+
+```
+
+Both datasets are checked with their dimensions:
+
+```{r echo=FALSE}
+# check dimensions of datasets
+cat("# rows traing: ",dim(train_var)[1])
+cat("# fields training: ",dim(train_var)[2])
+
+# check dimensions of datasets
+cat("# rows validation: ",dim(validate_var)[1])
+cat("# fields validation: ",dim(validate_var)[2])
+```
+
+\pagebreak
+
+## Modelling Approach
+
+First, a simple logistical regression model is trained with the training subset. The logistically transformed regression provides probabilities for a continous outcome. These probability needs to be split into the binary classification outcome. The translated outcome is compared to the actual training outcomes to provide the model accuracy within the training sample. The Logistical Regression does not converge with the whole dataset and is therefore trained with the excluded variables of low variability.
+
+
+```{r}
+# create log regression model
+set.seed(192)
+model1 <- glm(train_y_act ~ . , data=train_var_nzv, family = "binomial", maxit = 25)
+
+# predict responses with trained log function
+y_fc1_glm = predict(model1, newdata = train_var_nzv, type = 'response')
+
+# translate into binary results of cancer
+y_fc1 <- factor(ifelse(y_fc1_glm > 0.5, 1, 0))
+
+# model evaluation
+confusionMatrix(train_y_act, y_fc1)$overall["Accuracy"]
+```
+
+The logistic regression is dependend on the nzv subset of data, but with this preparation a high overall accuracy seems achievable.
+
+
+The second model is a Random Forrest generator, which sets up decision trees in a random fashion. The algorithm creates connected node weights and compares outcomes and therefore randomly finds decision trees which classify the records with a higher accuracy as the random sample.
+
+```{r}
+#RandomForest creation 
+set.seed(392)
+model2 = randomForest(x = train_var,
+                           y = train_y_act,
+                           ntree = 100)
+# write results
+y_fc2 = predict(model2, newdata = train_var, type = 'class')
+
+# model evaluation
+confusionMatrix(train_y_act, y_fc2)$overall["Accuracy"]
+```
+
+```{r echo=FALSE, fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+# show importance of variables
+importance <- varImp(model2)
+varImpPlot(model2)
+```
+
+The importance of variables (high meanDecreaseGini) reveals that in a pareto manner a quintile of variables has the highest contribution in prediction impact.
+
+
+As a third model, the Support Vector Machine model aims to be efficient and needs less computational power. The algorithm looks for hyerplanes in the n-variable-dimensional space. The classification is done by looking for a vector that is the best distinction between variables from both classes:
+
+```{r}
+#SVM creation
+set.seed(592)
+model3 = svm(formula = train_y_act ~ .,
+                  data = train_var,
+                  type = 'C-classification',
+                  kernel = 'linear')
+# write results
+y_fc3 = predict(model3, newdata = train_var, type = 'class')
+
+# model evaluation
+confusionMatrix(train_y_act, y_fc3)$overall["Accuracy"]
+```
+
+   
+      
+        
+        
+
+
+# Results
+The models are  trained against the training set. For the evaluation of results the validation data set is now used (only in this section for validation):
+```{r}
+##############################################################################+
+# Prediction Model 1 Validation
+##############################################################################+
+
+# predict responses with log function
+y_fc1_glm = predict(model1, newdata = validate_var_nzv, type = 'response')
+
+# translate into binary results of cancer
+y_fc1 <- factor(ifelse(y_fc1_glm > 0.5, 1, 0))
+
+# model evaluation
+confusionMatrix(validate_y_act, y_fc1)
+```
+
+
+```{r}
+##############################################################################+
+# Prediction Model 2 Validation
+##############################################################################+
+
+# write results
+y_fc2 = predict(model2, newdata = validate_var, type = 'class')
+
+# model evaluation
+confusionMatrix(validate_y_act, y_fc2)
+```
+
+```{r echo=FALSE, fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+# show importance of variables
+importance <- varImp(model2)
+varImpPlot(model2)
+```
+
+```{r}
+##############################################################################+
+# Prediction Model 3 Validation
+##############################################################################+
+
+# write results
+y_fc3 = predict(model3, newdata = validate_var, type = 'class')
+
+# model evaluation
+confusionMatrix(validate_y_act, y_fc3)
+
+```
+
+All models can retain their overall good accuracy of >.86. Overall accuracy accounts for True Positives (TP), True Negatives (TN), False Positives (FP) and False Negatives (FN).   
+
+The Sensitivity reflects how well actual positives are recognized: (TP)/(TP+FN).
+All three models show a high Sensitivity of >.87 and therefore are good in predicting positive cases.
+But they differ when looking at the accuracy of actual negatives being classified correctly. This is expressed as Specificity = (TN)/(TN+FP).
+
+The Specificity of 0 for the Logistical Regression shows this model is not capable to detect any actual negative value correctly. The parametrization either needs rework or data preparation for this needs to be adopted.
+Specificity of the Random Forrest was higher with .25 and SVM had the best result with .33. This means from this peer group the SVM model was te best to also predict actual negative cases correctly, but results are still imbalanced and not on level with the high sensitivity an overall accuracy.
+
+\pagebreak
+
+
+# Conclusion
+
+
+The validation prediction shows overall good accuracy. The SVM had the best Specificity & Sensitivity pair, but needs further fine tuning to improve the true negative detection.
+Random Forrests showed also a imbalanced pair of true positive & negative detection, but can be validated with a low reliability.
+The Logistical regression converged, but with elimination of the near zero values subset any Specificity could be established and therefore the model is not validated in the current form.   
+
+The analysis already revealed further improvement approaches. First, the highly correlated variables need to be further aggregated into single dimensions to reduce noise and complexity for the models.
+Secondly, the near zero variation analysis showed many variables with a low number of unique values. The impact of those could also the explanation for missing information that is needed to form a valid prediction.
+Lastly, other models like k-Means or Neural Nets could lift better classifications, as unsupervised classification models are known to work well on such classification problems.

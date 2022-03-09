@@ -1,0 +1,718 @@
+---
+title: "HarvardX PH125.9 Movie Lens Project"
+author: "Alexander Braune"
+date: "19.02.2022"
+
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    df_print: kable
+fontsize: 12pt
+geometry: margin=1in
+abstract: "This project shows basis steps of exploratory data analysis and the building of a basic linear regression machine learning model. As a use case the MovieLens data set is used to construct a forecast method that predicts movie ratings. The final model builds on average ratings and includes a user bias, movie impact and release year bias. A RMSE of 0.8248 on 5 star rating scale is achieved with a validation data set."
+---
+
+```{r Load libraries, include=FALSE, echo=FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(huxtable)) install.packages("huxtable", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(ggplot2)
+library(lubridate)
+library(huxtable)
+
+```
+
+\pagebreak
+
+# Introduction and Overview
+
+Movie ratings are a well known field where Data Science techniques were further developed. 
+The real world applicability is a strong arguments why students have an good access of understanding the concepts of Data Science within this field. 
+Business interests also furthered the development and popularity of movie recommendation systems. 
+Also, movie ratings from users that are tracked digitally are a vast source of heavily filled data set collections.   
+
+Therefore the development of a Machine Learning algorithm that predicts the movie rating of users will be the aim of this final project for the edX course PH125.9x form HarvardX.   
+  
+The data set used is offered by the GroupLens research lab in the Department of Computer Science and Engineering at the University of Minnesota.
+For performance reasons the MovieLens 10M Dataset version is used which has 10 million ratings. It is labeled as a stable benchmark set and was released in 1/2009.  
+
+Before applying any data investigation the whole data set is split into a 90% training set and a 10% validation set. 
+A model that is parametrized with the whole data set is prone to overfitting and one can not determine a true forecast accuracy as all data is already known to the model (bias). 
+With randomly splitting the data into separate sets the training of the model can be done without overfitting it. 
+After all parametrization of the model the true accuracy can be evaluated with a previously unconsidered validation data set.   
+
+```{r Load and split data sets, include=FALSE, echo=FALSE, eval=FALSE}
+##############################################################################+
+# Chapter 1: Intro // Load data, create train and validation data set      ####
+##############################################################################+
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl,"ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 3.6 or earlier: (which you obviously should not do)
+#movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+#                                           title = as.character(title),
+#                                           genres = as.character(genres))
+
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+train <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in train set
+validation <- temp %>% 
+  semi_join(train, by = "movieId") %>%
+  semi_join(train, by = "userId")
+
+# Add rows removed from validation set back into train set
+removed <- anti_join(temp, validation)
+train <- rbind(train, removed)
+
+# clear workspace environment
+rm(list=ls()[! ls() %in% c("train","validation")])
+
+```
+
+
+   
+First, the steps of performed exploratory data analysis in chapter 2.1 offer an in depth understanding of the data set. 
+The data structure, unique vales of variables are inspected and insights from variable constellations are generated. 
+The insights generated are then used in chapter 2.2 to build the Machine Learning model from scratch. 
+The models are compared by evaluating the overall root mean square error (RMSE) within the training set. 
+Hyperparameters are found for a final model. 
+All models are then evaluated with the validation data set in chapter 3 from which are conclusions drawn in chapter 4.  
+
+
+# Methods and Analysis
+In these sections the data is explored and the steps of model building and parametrization are described.  
+
+## Data Analysis
+The data set is downloaded and split as described in the Introduction. To investigate the data set we first evaluate the dimensions of both data tables:
+
+```{r echo=FALSE}
+# Dimensions of dataset train
+cat("TRAIN SET","\n","count rows: ",dim(train)[1],"\n","count fields: ",dim(train)[2])
+```
+
+```{r echo=FALSE}
+# Dimensions of dataset validation
+cat("VALIDATION SET","\n","count rows: ",dim(validation)[1],"\n","count fields: ",dim(validation)[2])
+
+```
+
+The supposed 10m records were split 9:1 and both sets have the same width of 6 fields.
+
+The completeness is also investigated:
+```{r echo=TRUE}
+anyNA(train)
+anyNA(validation)
+```
+
+Both sets are not missing values.    
+
+With head() a preview of the train set is derived:
+```{r echo=FALSE}
+# Summary of dataset
+head(train)%>%
+  as_hux() %>%
+      set_all_padding(0) %>% 
+      theme_basic() %>%
+      set_font_size(8) %>% 
+      set_bold(row = 1, col = everywhere) %>% 
+      set_bottom_border(row = 1, col = everywhere) 
+
+```
+
+A line in the data set represents a rating which was done by userId and is linked to a movieId.  
+The movie titles contain the release year in a systematic way (in between brackets). To make the release year accessible as a variable, a column with the extracted year is added to both data sets.
+
+```{r echo=TRUE}
+#add column with extracted release year to BOTH data sets
+train <- mutate(train, year= train$title %>% 
+                str_extract("(?<=\\()\\d{4}(?=\\))") 
+                %>% as.integer())
+validation <- mutate(validation, year= validation$title %>% 
+                str_extract("(?<=\\()\\d{4}(?=\\))") 
+                %>% as.integer())
+```
+
+\pagebreak
+The train set now has 7 columns:
+
+```{r echo=FALSE}
+# Summary of dataset
+summary(train)%>%
+  as_hux() %>%
+      set_all_padding(0) %>% 
+      theme_basic() %>%
+      set_font_size(8) %>% 
+      set_bold(row = 1, col = everywhere) %>% 
+      set_bottom_border(row = 1, col = everywhere)
+
+```
+
+The release years start at 1915 and goes up to 2008, but the median is 1994. This indicates there are more younger movies than older movies.   
+The rating starts at 0.5 goes and up to 5. Mean over all ratings is 3.5.
+
+Further investigation of unique values:
+```{r echo=FALSE}
+# Count unique entries
+rapply(train,function(x) length(unique(x)))
+```
+
+The train data set contains 9m ratings from nearly 70,000 users on over 10,000 movies.  
+Unique rating entries indicate a .5 rating scale.
+
+```{r echo=FALSE}
+#Show unique rating entries
+cat("Ratings:",sort(unique(train$rating)))
+```
+
+
+Further describing the rating scale the following graph shows the count of different ratings:   
+
+```{r echo=FALSE, fig.height=5, fig.width=8, message=FALSE, warning=FALSE}
+# Describe the rating scale distribution
+train %>%
+  ggplot(aes(rating)) +
+  geom_histogram(binwidth = 0.5, fill="lightgrey", color = "black") +
+  ggtitle("Movie Ratings") +
+  stat_bin(aes(y=..count.., label=..count..), binwidth=0.5, geom="text", vjust=-.5) +
+  scale_x_discrete(limits = c(seq(0.5,5,0.5)))+
+  theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+```
+
+The whole number ratings are more likely and the whole rating distribution shows a left skewness.  
+
+Describing the ratings ratio the following graph shows the count of ratings per user: 
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+# Describe the number of ratings per user
+med <- round(as.numeric(
+  train %>%
+    count(userId) %>% 
+    summarize(med=median(n))),2)
+train %>%
+  count(userId) %>%
+  ggplot(aes(n)) +
+  geom_density(color="darkblue", fill="lightblue") +
+  scale_x_log10() +
+  xlab("Number of ratings") +
+  ylab("Share of users") +
+  ggtitle("Number of ratings per user")+
+  geom_vline(xintercept=med,colour="darkblue", linetype = "longdash", lwd=1)+
+    annotate("text",  
+             x = 200,
+             y = 0.85,
+             label = paste("Median =", med),
+             col = "darkblue",
+             size = 4)
+```
+
+The median user gives 62 ratings. The average user with the highest share gives less, but a small proportion of users contribute >1,000 ratings.
+
+If users give different amount of ratings they also may contribute with a user specific bias. To investigate the average rating per user is plotted:
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+# Describe the rating scale distribution per user
+avg <- round(as.numeric(
+  train %>%
+    group_by(userId) %>% 
+    summarize(avg=mean(rating)) %>% summarize(mean(avg))),2)
+
+train %>%
+  group_by(userId) %>% 
+  summarize(avg=mean(rating)) %>%
+  ggplot(aes(avg)) +
+  geom_histogram(binwidth = 0.1, fill="lightgrey", color = "black") +
+  scale_x_discrete(limits = c(seq(0.5,5,0.5)))+
+  xlab("Average of ratings") +
+  ylab("Number of users") +
+  ggtitle("Average rating per user")+
+  geom_vline(xintercept=avg,colour="darkblue", linetype = "longdash", lwd=1)+
+  annotate("text",  
+    x = 2.5,
+    y = 6000,
+    label = paste("Mean =", avg),
+    col = "darkblue",
+    size = 4)
+```
+
+A user bias can be confirmed. The mean rating per user is 3.6 but there are users which systematically rate higher or lower than that.   
+
+Following with the perspective on movies, the number of ratings er movie is shown:  
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+# Describe the number of ratings per movie
+med <- round(as.numeric(
+  train %>%
+    count(movieId) %>% 
+    summarize(med=median(n))),2)
+train %>%
+  count(movieId) %>%
+  ggplot(aes(n)) +
+  geom_density(color="darkblue", fill="lightblue") +
+  scale_x_log10() +
+  xlab("Number of ratings") +
+  ylab("Share of movies") +
+  ggtitle("Number of ratings per movie")+
+  geom_vline(xintercept=med,colour="darkblue", linetype = "longdash", lwd=1)+
+    annotate("text",  
+             x = 800,
+             y = 0.4,
+             label = paste("Median =", med),
+             col = "darkblue",
+             size = 4)
+```
+
+
+An uneven contribution of movies per release year could be determined from the table summary. If users tend to have a bias this could be also true for old or young movies. To investigate the average rating per release year is shown:  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=8}
+# Describe the rating scale distribution per releaseyear
+avg <- round(as.numeric(
+  train %>%
+    group_by(year) %>% 
+    summarize(avg_rating=mean(rating)) %>% summarize(mean(avg_rating))),2)
+
+train %>%
+  group_by(year) %>% 
+  summarize(avg_rating=mean(rating)) %>%
+  ggplot(aes(year,avg_rating))+
+  geom_line()+
+  geom_point()+
+  geom_smooth(method="loess", formula="y ~ x",color="darkblue", fill="lightblue",span = 0.15, method.args = list(degree=1)) +
+  ylab("Average of ratings") +
+  xlab("Release year") +
+  ggtitle("Average rating per year")+
+  geom_hline(yintercept=avg, colour="darkblue", linetype = "longdash", lwd=1)+
+  annotate("text",  
+         x = 1998,
+         y = 3.75,
+         label = paste("Total mean =", avg),
+         col = "darkblue",
+         size = 4)
+
+# clear workspace environment
+rm(list=ls()[! ls() %in% c("train","validation")])
+```
+
+The average of the yearly average ratings is 3.72 and old movies are clearly above this mean. For the case of movies age discriminates and a bias from the release year can be determined.
+
+To summarize, this data exploration indicates variable dependencies. The rating of a movie is biased from the user and the release year has a influence on the average movie rating.
+
+## Modelling Approach
+
+To compare the different models, the root mean square error is defined as a function:
+```{r}
+#define the loss function 
+rmse <- function(act, fc){
+  sqrt(mean((act - fc)^2))}
+```
+
+This evaluates the error by comparing the actual rating and the forecasted prediction for all instances.   
+
+To provide a baseline, the first forecast is done with the average of all ratings:
+```{r echo=TRUE}
+## Baseline Model----
+
+#Calculate input parameters for forecast function
+avg_rating <- mean(train$rating)
+
+#Calculate error measure to compare models
+baseline_rmse <- RMSE(train$rating, avg_rating)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Report Baseline results
+rmse_results <- tibble("Prediction Model" = "Baseline (avg. rating)", RMSE = baseline_rmse) 
+rmse_results%>% knitr::kable("simple")
+```
+
+This means the prediction of ratings is always done with the average of the whole historic data set. This is a naive forecast and leads to a RMSE of >1.     
+
+To account for the movie specific bias, a linear regression increment is added to the forecast function:  
+
+```{r}
+## Model 1: Movie effect Model----
+
+#Calculate input parameters for forecast function
+movie_avgs <- train %>% 
+  group_by(movieId) %>% 
+  summarize(movie_avgs = sum(rating - avg_rating)/(n()))
+
+#Create Forecast
+fc <- train %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  mutate(fc = avg_rating + movie_avgs) %>% .$fc
+```
+
+The forecast now depends on the overall average of all ratings and the average of previous ratings of a movie.  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#Calculate error measure to compare models
+model_1_rmse <- RMSE(train$rating, fc)
+
+#Report results
+rmse_results <- bind_rows(rmse_results,
+                          data_frame("Prediction Model"="Movie Effect Model",
+                                     RMSE = model_1_rmse ))
+rmse_results%>% knitr::kable()
+```
+
+Movie bias improves the RMSE, as variability in ratings can be explained to some extent from historic ratings per movie.  
+
+The user specific bias can also be added as a linear regression increment:  
+
+```{r}
+## Model 2: Movie + User effect Model----
+
+#Calculate input parameters for forecast function
+user_avgs <- train %>%
+  left_join(movie_avgs, by="movieId") %>%
+  group_by(userId) %>% 
+  summarize(user_avgs = sum(rating - avg_rating - movie_avgs)/(n()))
+
+#Create Forecast
+fc <- train %>% 
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  mutate(fc = avg_rating + movie_avgs + user_avgs) %>% .$fc
+```
+
+With both increments included, the forecast now also depends on previous ratings of the user. This accounts for user bias and improves the RMSE  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#Calculate error measure to compare models
+model_2_rmse <- RMSE(train$rating, fc)
+
+# Report results
+rmse_results <- bind_rows(rmse_results,
+                          data_frame("Prediction Model"="Movie + User Effect Model",
+                                     RMSE = model_2_rmse ))
+rmse_results%>% knitr::kable()
+```
+
+Data analysis suggested that the release year also has an impact on the rating. The release year is also added to the regression function:   
+
+```{r}
+## Model 3: Movie + User + Year effect Model----
+
+#Calculate input parameters for forecast function
+year_avgs <- train %>%
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  group_by(year) %>% 
+  summarize(year_avgs = sum(rating - avg_rating - movie_avgs - user_avgs)/(n()))
+
+#Create Forecast
+fc <- train %>% 
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  left_join(year_avgs, by="year") %>%
+  mutate(fc = avg_rating + movie_avgs + user_avgs + year_avgs) %>% .$fc
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#Calculate error measure to compare models
+model_3_rmse <- RMSE(train$rating, fc)
+
+# Report results
+rmse_results <- bind_rows(rmse_results,
+                          data_frame("Prediction Model"="Movie + User + Year Effect Model",
+                                     RMSE = model_3_rmse ))
+rmse_results%>% knitr::kable()
+```
+
+All regression increments are now included without weighting in the forecast term. But the impact of variables becomes more stable with a high number of observations. Currently for example a user with very low number of ratings has the same impact on the forecast as the average rating per movie from many ratings.   
+To not overestimate the influence from a variable with low number of estimations a tuning parameter is introduced that factors in the count of observations and lowers the regression impact of those with low number of previous observations.   
+
+The forecast is produced for a series of regulator values. As a initial value the regulator is filled with values from 0 to 5.      
+
+```{r}
+## Model 4: Regularized Movie + User + Year effect Model----
+
+#open regulator search, set first window from 0 to 5
+regulator <- seq(0,5,.5)
+
+#apply forecast function to all regulator values
+rmse_reg <- sapply(regulator, function(y){
+
+  #Calculate input parameters for forecast function
+  movie_avgs <- train %>% 
+  group_by(movieId) %>% 
+  summarize(movie_avgs = sum(rating - avg_rating)/(n()+y))
+
+user_avgs <- train %>%
+  left_join(movie_avgs, by="movieId") %>%
+  group_by(userId) %>% 
+  summarize(user_avgs = sum(rating - avg_rating - movie_avgs)/(n()+y))
+
+year_avgs <- train %>%
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  group_by(year) %>% 
+  summarize(year_avgs = sum(rating - avg_rating - movie_avgs - user_avgs)/(n()+y))
+
+#Create Forecast
+fc <- train %>% 
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  left_join(year_avgs, by="year") %>%
+  mutate(fc = avg_rating + movie_avgs + user_avgs + year_avgs) %>% .$fc
+
+#Calculate error measure for all regulator values
+  return(RMSE(train$rating,fc))
+})
+```
+
+The regulating values produce following RMSEs:   
+```{r echo=FALSE, message=FALSE, warning=FALSE,fig.height=4, fig.width=8}
+# show RMSE results per regulator
+qplot(regulator, rmse_reg)
+```
+
+The preliminary solution is the regulating value is:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# define regulator by lowest rmse
+model_4_reg <- regulator[which.min(rmse_reg)]
+model_4_rmse <- min(rmse_reg)
+cat("RMSE of ",model_4_rmse," with regulator of ",model_4_reg)
+```
+
+To further improve, the window of valid values is narrowed down and the optimal tuning parameter on 0.01 digit level is chosen:   
+
+```{r include=FALSE, message=FALSE, warning=FALSE}
+#narrow regulator search to window 0.01 accuracy
+regulator <- seq(0.25,0.35,.01)
+
+#apply forecast function to all regulator values
+rmse_reg <- sapply(regulator, function(y){
+  #Calculate input parameters for forecast function
+    movie_avgs <- train %>% 
+    group_by(movieId) %>% 
+    summarize(movie_avgs = sum(rating - avg_rating)/(n()+y))
+  
+  user_avgs <- train %>%
+    left_join(movie_avgs, by="movieId") %>%
+    group_by(userId) %>% 
+    summarize(user_avgs = sum(rating - avg_rating - movie_avgs)/(n()+y))
+  
+  year_avgs <- train %>%
+    left_join(movie_avgs, by="movieId") %>%
+    left_join(user_avgs, by="userId") %>%
+    group_by(year) %>% 
+    summarize(year_avgs = sum(rating - avg_rating - movie_avgs - user_avgs)/(n()+y))
+  
+  #Create Forecast  
+  fc <- train %>% 
+    left_join(movie_avgs, by="movieId") %>%
+    left_join(user_avgs, by="userId") %>%
+    left_join(year_avgs, by="year") %>%
+    mutate(fc = avg_rating + movie_avgs + user_avgs + year_avgs) %>% .$fc
+  
+  return(RMSE(train$rating,fc))
+})
+```
+
+```{r, message=FALSE, warning=FALSE,fig.height=4, fig.width=8}
+# show RMSE results per regulator
+qplot(regulator, rmse_reg)
+```
+
+The final tuning parameter for model 4 is set to:   
+
+```{r echo=FALSE}
+# define regulator by lowest rmse
+model_4_reg <- regulator[which.min(rmse_reg)]
+model_4_rmse <- min(rmse_reg)
+cat("RMSE of ",model_4_rmse," with regulator of ",model_4_reg)
+```
+
+This improves the model to some extent as the RMSE lowers, but asymptotically.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Report results
+rmse_results <- bind_rows(rmse_results,
+                          data_frame("Prediction Model"="Regularized Movie + User + Year Effect Model",
+                                     RMSE = model_4_rmse ))
+rmse_results%>% knitr::kable()
+```
+
+With further inclusion of variable dependencies to the linear regression model the forecast improves and the RMSE value is lower.   
+
+# Results
+Within the model approach chapter the training data set was used. To test for true accuracy, the models are run with the validation test set.
+
+```{r include=FALSE, message=FALSE, warning=FALSE}
+
+## Baseline Model----
+#Calculate input parameters for forecast function
+avg_rating <- mean(validation$rating)
+
+#Calculate error measure to compare models
+baseline_rmse <- RMSE(validation$rating, avg_rating)
+
+
+
+
+
+## Model 1: Movie effect Model----
+
+#Calculate input parameters for forecast function
+movie_avgs <- validation %>% 
+  group_by(movieId) %>% 
+  summarize(movie_avgs = sum(rating - avg_rating)/(n()))
+
+#Create Forecast 
+fc <- validation %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  mutate(fc = avg_rating + movie_avgs) %>% .$fc
+
+#Calculate error measure to compare models
+model_1_rmse <- RMSE(validation$rating, fc)
+
+
+
+
+
+## Model 2: Movie + User effect Model----
+
+#Calculate input parameters for forecast function
+user_avgs <- validation %>%
+  left_join(movie_avgs, by="movieId") %>%
+  group_by(userId) %>% 
+  summarize(user_avgs = sum(rating - avg_rating - movie_avgs)/(n()))
+
+#Create Forecast
+fc <- validation %>% 
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  mutate(fc = avg_rating + movie_avgs + user_avgs) %>% .$fc
+
+#Calculate error measure to compare models
+model_2_rmse <- RMSE(validation$rating, fc)
+
+
+
+
+
+
+
+## Model 3: Movie + User + Year effect Model----
+
+#Calculate input parameters for forecast function
+year_avgs <- validation %>%
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  group_by(year) %>% 
+  summarize(year_avgs = sum(rating - avg_rating - movie_avgs - user_avgs)/(n()))
+
+#Create Forecast
+fc <- validation %>% 
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  left_join(year_avgs, by="year") %>%
+  mutate(fc = avg_rating + movie_avgs + user_avgs + year_avgs) %>% .$fc
+
+#Calculate error measure to compare models
+model_3_rmse <- RMSE(validation$rating, fc)
+
+
+
+
+
+## Model 4: Regularized Movie + User + Year effect Model----
+
+#set regularization parameter from previously trained model
+y <- model_4_reg
+
+#Calculate input parameters for forecast function
+movie_avgs <- validation %>% 
+  group_by(movieId) %>% 
+  summarize(movie_avgs = sum(rating - avg_rating)/(n()+y))
+
+user_avgs <- validation %>%
+  left_join(movie_avgs, by="movieId") %>%
+  group_by(userId) %>% 
+  summarize(user_avgs = sum(rating - avg_rating - movie_avgs)/(n()+y))
+
+year_avgs <- validation %>%
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  group_by(year) %>% 
+  summarize(year_avgs = sum(rating - avg_rating - movie_avgs - user_avgs)/(n()+y))
+
+#Create Forecast
+fc <- validation %>% 
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  left_join(year_avgs, by="year") %>%
+  mutate(fc = avg_rating + movie_avgs + user_avgs + year_avgs) %>% .$fc
+
+#Calculate error measure to compare models
+model_4_rmse <- RMSE(validation$rating, fc)
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Report  results
+
+results <- hux(
+  "Prediction Model" = c("Baseline (avg reating)","Movie Effect Model","Movie + User Effect Model","Movie + User + Year Effect Model","Regularized Movie + User + Year Effect Model"),
+  "RMSE (validation set)" = c(baseline_rmse,model_1_rmse,model_2_rmse,model_3_rmse,model_4_rmse)
+  )
+
+results %>%
+  set_all_padding(0) %>% 
+      theme_basic() %>%
+      set_number_format(6) %>% 
+      set_bold(row = 1, col = everywhere) %>% 
+      set_bottom_border(row = 1, col = everywhere)
+
+```
+
+All regression elements lower the RMSE, therefore they contribute in explaining predicted outcomes. The regularization is, after including other variables, a tuning parameter that improves the regression, but by a narrow margin.
+
+The final model predicts the validation set ratings with a RMSE of 0.8251.
+
+# Conclusion
+The validation prediction shows overall good error measures, compared to the whole rating scale values. But results of the validation show that the fine tunes regularized model is less accurate than the Model 3. The regularization parameter therefore can not explain all hidden and further dependencies. Future analysis should concentrate on explaining more in depth dependencies with matrix factorization and principle component analysis for example.   
+Also, linear regression is seen as the most basic concept and more advances Machine Learning algorithms could reveal further potential in forecast accuracy. 
+
+
+
+
+
+
+
+
+
+
